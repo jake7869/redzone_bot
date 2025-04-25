@@ -6,8 +6,8 @@ import os
 import json
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-CHANNEL_ID = 1359223780857217246  # Redzone activity channel
-LEADERBOARD_CHANNEL_ID = 1359223780857217246  # <-- UPDATE this to your leaderboard channel ID
+CHANNEL_ID = 1359223780857217246
+LEADERBOARD_CHANNEL_ID = 1359223780857217246  # <-- Change this to your leaderboard channel ID
 ADMIN_ROLE_ID = 1300916696860856448
 WIN_AMOUNT = 250_000
 
@@ -46,7 +46,13 @@ class PermanentRedzoneView(View):
     async def start_redzone(self, interaction: discord.Interaction, button: Button):
         global redzone_count
         view = RedzoneView(redzone_number=redzone_count)
-        await interaction.channel.send(f"🚨 Join Redzone {redzone_count}! You have 6 minutes.", view=view)
+        embed = discord.Embed(
+            title=f"🚨 Join Redzone {redzone_count}!",
+            description="You have 6 minutes.\n\n👥 Joined: _None yet_",
+            color=discord.Color.red()
+        )
+        msg = await interaction.channel.send(embed=embed, view=view)
+        view.set_message(msg)
         await view.start_outcome_prompt(interaction.guild, interaction.channel)
         redzone_count += 1
         save_json(COUNT_FILE, {"count": redzone_count})
@@ -56,15 +62,36 @@ class RedzoneView(View):
         super().__init__(timeout=None)
         self.redzone_number = redzone_number
         self.joined_users = set()
+        self.message = None
+
+    def set_message(self, message):
+        self.message = message
+
+    async def update_joined_embed(self, guild):
+        names = [f"<@{uid}>" for uid in self.joined_users]
+        name_list = ", ".join(names) if names else "_None yet_"
+        embed = discord.Embed(
+            title=f"🚨 Join Redzone {self.redzone_number}!",
+            description=f"You have 6 minutes.\n\n👥 Joined: {name_list}",
+            color=discord.Color.red()
+        )
+        await self.message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="Join Redzone", style=discord.ButtonStyle.success)
     async def join(self, interaction: discord.Interaction, button: Button):
         self.joined_users.add(interaction.user.id)
-        joined_users.add(str(interaction.user.id))
-        user_id = str(interaction.user.id)
-        redzone_data.setdefault(user_id, {"joined": 0, "wins": 0, "earned": 0})
-        redzone_data[user_id]["joined"] += 1
+
+        uid_str = str(interaction.user.id)
+        joined_users.add(uid_str)
+
+        if uid_str not in redzone_data:
+            redzone_data[uid_str] = {"joined": 0, "wins": 0, "earned": 0}
+
+        redzone_data[uid_str]["joined"] += 1
         save_json(DATA_FILE, redzone_data)
+
+        await self.update_joined_embed(interaction.guild)
+        await update_leaderboard(interaction.guild)
         await interaction.response.send_message(f"✅ You've joined Redzone {self.redzone_number}!", ephemeral=True)
 
     async def start_outcome_prompt(self, guild, channel):

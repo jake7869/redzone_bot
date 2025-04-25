@@ -1,164 +1,197 @@
 import discord
-from discord.ext import commands, tasks
-from discord import app_commands, Interaction, Embed
+from discord.ext import commands
+from discord.ui import Button, View
+import asyncio
 import os
-from dotenv import load_dotenv
+import json
 
-load_dotenv()
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+CHANNEL_ID = 1359223780857217246
+LEADERBOARD_CHANNEL_ID = 1359223780857217246  # <-- Change this to your leaderboard channel ID
+ADMIN_ROLE_ID = 1300916696860856448
+WIN_AMOUNT = 250_000
 
-TOKEN = os.getenv("YOUR_BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
-LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID"))
-PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID"))
-ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID"))
+DATA_FILE = "redzone_data.json"
+COUNT_FILE = "redzone_count.json"
+LOG_FILE = "redzone_log.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-storage = {
-    "drugs": 0,
-    "dirty": 0,
-    "clean": 0
-}
+def load_json(filename, default):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            return json.load(f)
+    return default
 
-leaderboard = {}
+def save_json(filename, data):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)
 
-class DropPanel(discord.ui.View):
+redzone_data = load_json(DATA_FILE, {})
+joined_users = set(redzone_data.keys())
+redzone_count = load_json(COUNT_FILE, {"count": 1})["count"]
+redzone_logs = load_json(LOG_FILE, [])
+leaderboard_message = None
+
+class PermanentRedzoneView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Take Drugs", style=discord.ButtonStyle.primary)
-    async def take_drugs(self, interaction: Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TakeDrugsModal())
+    @discord.ui.button(label="Start Redzone", style=discord.ButtonStyle.primary, custom_id="start_redzone_button")
+    async def start_redzone(self, interaction: discord.Interaction, button: Button):
+        global redzone_count
+        view = RedzoneView(redzone_number=redzone_count)
+        embed = discord.Embed(
+            title=f"🚨 Join Redzone {redzone_count}!",
+            description="You have 6 minutes.\n\n👥 Joined: _None yet_",
+            color=discord.Color.red()
+        )
+        msg = await interaction.channel.send(embed=embed, view=view)
+        view.set_message(msg)
+        await view.start_outcome_prompt(interaction.guild, interaction.channel)
+        redzone_count += 1
+        save_json(COUNT_FILE, {"count": redzone_count})
 
-    @discord.ui.button(label="Deposit Dirty Money", style=discord.ButtonStyle.success)
-    async def deposit_dirty(self, interaction: Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DepositMoneyModal("dirty"))
+class RedzoneView(View):
+    def __init__(self, redzone_number):
+        super().__init__(timeout=None)
+        self.redzone_number = redzone_number
+        self.joined_users = set()
+        self.message = None
 
-    @discord.ui.button(label="Deposit Clean Money", style=discord.ButtonStyle.success)
-    async def deposit_clean(self, interaction: Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DepositMoneyModal("clean"))
+    def set_message(self, message):
+        self.message = message
 
-    @discord.ui.button(label="Set Drugs (Admin Only)", style=discord.ButtonStyle.secondary)
-    async def set_drugs(self, interaction: Interaction, button: discord.ui.Button):
+    async def update_joined_embed(self, guild):
+        names = [f"<@{uid}>" for uid in self.joined_users]
+        name_list = ", ".join(names) if names else "_None yet_"
+        embed = discord.Embed(
+            title=f"🚨 Join Redzone {self.redzone_number}!",
+            description=f"You have 6 minutes.\n\n👥 Joined: {name_list}",
+            color=discord.Color.red()
+        )
+        await self.message.edit(embed=embed, view=self)
+
+    @discord.ui.button(label="Join Redzone", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: Button):
+        self.joined_users.add(interaction.user.id)
+
+        uid_str = str(interaction.user.id)
+        joined_users.add(uid_str)
+
+        if uid_str not in redzone_data:
+            redzone_data[uid_str] = {"joined": 0, "wins": 0, "earned": 0}
+
+        redzone_data[uid_str]["joined"] += 1
+        save_json(DATA_FILE, redzone_data)
+
+        await self.update_joined_embed(interaction.guild)
+        await update_leaderboard(interaction.guild)
+        await interaction.response.send_message(f"✅ You've joined Redzone {self.redzone_number}!", ephemeral=True)
+
+    async def start_outcome_prompt(self, guild, channel):
+        await asyncio.sleep(360)
+        participants = list(self.joined_users)
+        rn = self.redzone_number
+
+        class OutcomeView(View):
+            def __init__(self):
+                super().__init__(timeout=None)
+
+            @discord.ui.button(label="Win", style=discord.ButtonStyle.success)
+            async def win(self, interaction: discord.Interaction, button: Button):
+                if not participants:
+                    await interaction.response.send_message("❌ No participants to reward.", ephemeral=True)
+                    return
+                split = WIN_AMOUNT // len(participants)
+                log_entry = {
+                    "redzone": rn,
+                    "result": "win",
+                    "split": split,
+                    "participants": []
+                }
+                for uid in participants:
+                    uid_str = str(uid)
+                    redzone_data[uid_str]["wins"] += 1
+                    redzone_data[uid_str]["earned"] += split
+                    log_entry["participants"].append(uid_str)
+                redzone_logs.append(log_entry)
+                save_json(DATA_FILE, redzone_data)
+                save_json(LOG_FILE, redzone_logs)
+                await update_leaderboard(guild)
+                await interaction.response.edit_message(content=f"✅ Redzone {rn} marked as a **WIN**! Each participant gets £{split:,}.", view=None)
+
+            @discord.ui.button(label="Lose", style=discord.ButtonStyle.danger)
+            async def lose(self, interaction: discord.Interaction, button: Button):
+                redzone_logs.append({
+                    "redzone": rn,
+                    "result": "loss",
+                    "participants": [str(uid) for uid in participants]
+                })
+                save_json(LOG_FILE, redzone_logs)
+                await interaction.response.edit_message(content=f"❌ Redzone {rn} marked as a **LOSS**. No payout.", view=None)
+
+        await channel.send(f"⏳ Redzone {rn} over. Was it a win or a loss?", view=OutcomeView())
+
+class ResetView(View):
+    @discord.ui.button(label="Payout & Reset", style=discord.ButtonStyle.danger)
+    async def reset(self, interaction: discord.Interaction, button: Button):
         if ADMIN_ROLE_ID not in [role.id for role in interaction.user.roles]:
-            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
+            await interaction.response.send_message("❌ You don't have permission to reset the leaderboard.", ephemeral=True)
             return
-        await interaction.response.send_modal(SetDrugsModal())
+        redzone_data.clear()
+        joined_users.clear()
+        save_json(DATA_FILE, redzone_data)
+        await update_leaderboard(interaction.guild)
+        await interaction.response.send_message("✅ Leaderboard has been reset!", ephemeral=True)
 
-    @discord.ui.button(label="Remove All Money (Admin Only)", style=discord.ButtonStyle.danger)
-    async def remove_all_money(self, interaction: Interaction, button: discord.ui.Button):
-        if ADMIN_ROLE_ID not in [role.id for role in interaction.user.roles]:
-            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
-            return
-        storage["dirty"] = 0
-        storage["clean"] = 0
-        await interaction.response.send_message("💸 All money removed.", ephemeral=True)
-        await update_leaderboard()
+async def update_leaderboard(guild):
+    global leaderboard_message
+    channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
 
-    @discord.ui.button(label="Reset Leaderboard (Admin Only)", style=discord.ButtonStyle.danger)
-    async def reset_leaderboard(self, interaction: Interaction, button: discord.ui.Button):
-        if ADMIN_ROLE_ID not in [role.id for role in interaction.user.roles]:
-            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
-            return
-        leaderboard.clear()
-        await interaction.response.send_message("Leaderboard has been reset.", ephemeral=True)
-        await update_leaderboard()
+    all_data = {
+        uid: redzone_data.get(uid, {"joined": 0, "wins": 0, "earned": 0})
+        for uid in joined_users
+    }
+    leaderboard = sorted(all_data.items(), key=lambda x: x[1]["earned"], reverse=True)
 
-class TakeDrugsModal(discord.ui.Modal, title="Take Drugs"):
-    drug_amount = discord.ui.TextInput(label="Drugs Taken", required=True)
-    money_amount = discord.ui.TextInput(label="Money Deposited", required=True)
-    money_type = discord.ui.TextInput(label="Money Type (dirty/clean)", required=True)
-    for_user = discord.ui.TextInput(label="@User or leave blank for self", required=False)
+    desc = ""
+    sus_section = ""
+    for uid, stats in leaderboard:
+        member = guild.get_member(int(uid))
+        if not member:
+            continue
+        desc += f"<@{uid}> — £{stats['earned']:,} ({stats['joined']} joins / {stats['wins']} wins)\n"
+        if stats["joined"] >= 3 and stats["wins"] == 0:
+            sus_section += f"🚨 <@{uid}> — {stats['joined']} joins / {stats['wins']} wins\n"
 
-    async def on_submit(self, interaction: Interaction):
-        user = interaction.user
-        target = self.for_user.value if self.for_user.value else user.mention
-        try:
-            drugs = int(self.drug_amount.value)
-            money = int(self.money_amount.value)
-            mtype = self.money_type.value.lower()
-            if mtype not in ["dirty", "clean"]:
-                raise ValueError("Invalid money type")
+    if sus_section:
+        desc += f"\n__**Sus Players**__\n{sus_section}"
 
-            # Check
-            if drugs > storage["drugs"]:
-                await interaction.response.send_message("Not enough drugs in storage.", ephemeral=True)
-                return
-            if money < drugs * 5000:
-                alert_ids = os.getenv("ALERT_USER_IDS", "").split(",")
-                mentions = " ".join(f"<@{uid.strip()}>" for uid in alert_ids if uid.strip())
-                await interaction.channel.send(f"🚨 {mentions} Suspicious drop: {user.mention} only paid £{money:,} for {drugs} drugs.")
+    embed = discord.Embed(
+        title="🏆 Redzone Earnings Leaderboard",
+        description=desc or "No participants yet.",
+        color=0x00ff00
+    )
 
-            # Log and adjust
-            storage["drugs"] -= drugs
-            storage[mtype] += money
-            leaderboard.setdefault(target, {"in": 0, "out": 0, "drugs": 0})
-            leaderboard[target]["out"] += money
-            leaderboard[target]["drugs"] += drugs
-
-            await interaction.response.send_message(f"✅ {user.mention} took {drugs} drugs for {target} and deposited £{money:,} {mtype}.")
-            await update_leaderboard()
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
-
-class DepositMoneyModal(discord.ui.Modal):
-    def __init__(self, mtype):
-        super().__init__(title=f"Deposit {mtype.title()} Money")
-        self.mtype = mtype
-        self.amount = discord.ui.TextInput(label="Amount", required=True)
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: Interaction):
-        user = interaction.user
-        try:
-            amount = int(self.amount.value)
-            storage[self.mtype] += amount
-            leaderboard.setdefault(user.display_name, {"in": 0, "out": 0, "drugs": 0})
-            leaderboard[user.display_name]["in"] += amount
-            await interaction.response.send_message(f"💸 {user.mention} deposited £{amount:,} {self.mtype}.")
-            await update_leaderboard()
-        except:
-            await interaction.response.send_message("❌ Invalid amount.", ephemeral=True)
-
-class SetDrugsModal(discord.ui.Modal, title="Set Total Drugs"):
-    amount = discord.ui.TextInput(label="Drugs in storage", required=True)
-
-    async def on_submit(self, interaction: Interaction):
-        try:
-            amt = int(self.amount.value)
-            storage["drugs"] = amt
-            await interaction.response.send_message(f"💊 Drugs in storage set to {amt}.")
-            await update_leaderboard()
-        except:
-            await interaction.response.send_message("❌ Invalid input.", ephemeral=True)
-
-async def update_leaderboard():
-    try:
-        channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
-        if channel:
-            sorted_lb = sorted(leaderboard.items(), key=lambda x: x[1]["in"], reverse=True)
-            desc = "\n".join([
-                f"**{name}** - Paid: £{data['in']:,}, Taken: £{data['out']:,}, Drugs: {data['drugs']}"
-                for name, data in sorted_lb
-            ])
-            total = f"\n\n**Storage Totals:**\n• Drugs: {storage['drugs']}\n• Dirty: £{storage['dirty']:,}\n• Clean: £{storage['clean']:,}"
-            embed = Embed(title="💊 Drug Leaderboard", description=desc + total)
-            await channel.purge(limit=10)
-            await channel.send(embed=embed)
-    except Exception as e:
-        print("Leaderboard error:", e)
+    if leaderboard_message:
+        await leaderboard_message.edit(embed=embed)
+    else:
+        leaderboard_message = await channel.send(embed=embed, view=ResetView())
 
 @bot.event
 async def on_ready():
-    print(f"Bot is online as {bot.user}")
-    channel = bot.get_channel(PANEL_CHANNEL_ID)
-    if channel:
-        await channel.purge(limit=5)
-        await channel.send("📊 **Drop Panel**", view=DropPanel())
-    await update_leaderboard()
+    print(f"✅ Logged in as {bot.user}")
+    guild = bot.guilds[0]
+    redzone_channel = guild.get_channel(CHANNEL_ID)
+
+    view = PermanentRedzoneView()
+    await update_leaderboard(guild)
+    await redzone_channel.send("🔘 Use the button below to start a Redzone round:", view=view)
 
 bot.run(TOKEN)

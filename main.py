@@ -1,7 +1,4 @@
-
-        save_json(DATA_FILE, redzone_data)
-        await update_leaderboard(interaction.guild)
-        await interaction.respoimport discord
+import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
@@ -9,8 +6,8 @@ import os
 import json
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-CHANNEL_ID = 1359223780857217246
-LEADERBOARD_CHANNEL_ID = 1359223780857217246  # <-- Change this to your leaderboard channel ID
+CHANNEL_ID = 1359223780857217246  # Redzone activity channel
+LEADERBOARD_CHANNEL_ID = 1359223780857217246  # Change this to your leaderboard channel ID
 ADMIN_ROLE_ID = 1300916696860856448
 WIN_AMOUNT = 250_000
 
@@ -93,9 +90,10 @@ class RedzoneView(View):
         redzone_data[uid_str]["joined"] += 1
         save_json(DATA_FILE, redzone_data)
 
+        await interaction.response.defer(ephemeral=True)
         await self.update_joined_embed(interaction.guild)
         await update_leaderboard(interaction.guild)
-        await interaction.response.send_message(f"✅ You've joined Redzone {self.redzone_number}!", ephemeral=True)
+        await interaction.followup.send(f"✅ You've joined Redzone {self.redzone_number}!", ephemeral=True)
 
     async def start_outcome_prompt(self, guild, channel):
         await asyncio.sleep(360)
@@ -148,7 +146,10 @@ class ResetView(View):
             await interaction.response.send_message("❌ You don't have permission to reset the leaderboard.", ephemeral=True)
             return
         redzone_data.clear()
-        joined_users.clear()nse.send_message("✅ Leaderboard has been reset!", ephemeral=True)
+        joined_users.clear()
+        save_json(DATA_FILE, redzone_data)
+        await update_leaderboard(interaction.guild)
+        await interaction.response.send_message("✅ Leaderboard has been reset!", ephemeral=True)
 
 async def update_leaderboard(guild):
     global leaderboard_message

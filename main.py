@@ -12,7 +12,6 @@ ADMIN_ROLE_ID = 1300916696860856448
 WIN_AMOUNT = 250_000
 
 DATA_FILE = "redzone_data.json"
-COUNT_FILE = "redzone_count.json"
 LOG_FILE = "redzone_log.json"
 
 intents = discord.Intents.default()
@@ -36,7 +35,7 @@ redzone_data = load_json(DATA_FILE, {})
 joined_users = set(redzone_data.keys())
 redzone_logs = load_json(LOG_FILE, [])
 leaderboard_message = None
-active_redzone_messages = []
+active_redzones = {}  # postal -> list of messages
 
 class PermanentRedzoneView(View):
     def __init__(self):
@@ -62,7 +61,7 @@ class PermanentRedzoneView(View):
             redzone_channel = interaction.guild.get_channel(CHANNEL_ID)
             posted_msg = await redzone_channel.send(embed=embed, view=view)
             view.set_message(posted_msg)
-            active_redzone_messages.append(posted_msg)
+            active_redzones[postal_code] = [posted_msg]
             await view.start_outcome_prompt(interaction.guild, redzone_channel)
         except asyncio.TimeoutError:
             await interaction.followup.send("❌ Redzone creation cancelled (no postal provided).", ephemeral=True)
@@ -120,24 +119,34 @@ class RedzoneView(View):
 
             @discord.ui.button(label="Win", style=discord.ButtonStyle.success)
             async def win(self, interaction: discord.Interaction, button: Button):
-                await handle_redzone_end("win", participants, guild, channel, interaction)
+                await handle_redzone_end(self.postal_code, "win", participants, guild, channel, interaction)
 
             @discord.ui.button(label="Lose", style=discord.ButtonStyle.danger)
             async def lose(self, interaction: discord.Interaction, button: Button):
-                await handle_redzone_end("loss", participants, guild, channel, interaction)
+                await handle_redzone_end(self.postal_code, "loss", participants, guild, channel, interaction)
 
-        msg = await channel.send(f"⏳ Redzone at Postal: {self.postal_code} over. Was it a win or a loss?", view=OutcomeView())
-        active_redzone_messages.append(msg)
+        msg = await channel.send(f"⏳ Redzone at Postal {self.postal_code} is over. Was it a win or a loss?", view=OutcomeView())
+        active_redzones[self.postal_code].append(msg)
 
-async def handle_redzone_end(result, participants, guild, channel, interaction):
-    for view_message in active_redzone_messages:
+async def handle_redzone_end(postal_code, result, participants, guild, channel, interaction):
+    # Disable buttons
+    for msg in active_redzones.get(postal_code, []):
         try:
-            for component in view_message.components:
-                for child in component.children:
+            for comp in msg.components:
+                for child in comp.children:
                     child.disabled = True
-            await view_message.edit(view=view_message.components[0].view if view_message.components else None)
+            await msg.edit(view=msg.components[0].view if msg.components else None)
         except:
             pass
+
+    # Delete all messages linked to this Redzone
+    await asyncio.sleep(1)
+    for msg in active_redzones.get(postal_code, []):
+        try:
+            await msg.delete()
+        except:
+            pass
+    active_redzones.pop(postal_code, None)
 
     if result == "win" and participants:
         split = WIN_AMOUNT // len(participants)
@@ -147,22 +156,9 @@ async def handle_redzone_end(result, participants, guild, channel, interaction):
             redzone_data[uid_str]["earned"] += split
         save_json(DATA_FILE, redzone_data)
         await update_leaderboard(guild)
-        await interaction.response.edit_message(content=f"✅ Redzone marked as a **WIN**! Each participant gets £{split:,}.", view=None)
+        await channel.send(f"✅ Redzone at Postal {postal_code} marked as a **WIN**! Each participant gets £{split:,}.")
     else:
-        await interaction.response.edit_message(content=f"❌ Redzone marked as a **LOSS**. No payout.", view=None)
-
-    await cleanup_redzone_messages(channel)
-
-async def cleanup_redzone_messages(channel):
-    await asyncio.sleep(2)
-    messages = await channel.history(limit=100).flatten()
-    for msg in messages:
-        if msg.id != leaderboard_message.id and not any(btn.custom_id == "start_redzone_button" for btn in getattr(msg.components[0], "children", [])):
-            try:
-                await msg.delete()
-            except:
-                pass
-    active_redzone_messages.clear()
+        await channel.send(f"❌ Redzone at Postal {postal_code} marked as a **LOSS**. No payout.")
 
 class ResetView(View):
     @discord.ui.button(label="Payout & Reset", style=discord.ButtonStyle.danger)

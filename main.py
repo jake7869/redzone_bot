@@ -65,6 +65,7 @@ class RedzoneView(View):
         self.redzone_number = redzone_number
         self.joined_users = set()
         self.message = None
+        self.closed = False
 
     def set_message(self, message):
         self.message = message
@@ -79,8 +80,12 @@ class RedzoneView(View):
         )
         await self.message.edit(embed=embed, view=self)
 
-    @discord.ui.button(label="Join Redzone", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Join Redzone", style=discord.ButtonStyle.success, custom_id="join_redzone_button")
     async def join(self, interaction: discord.Interaction, button: Button):
+        if self.closed:
+            await interaction.response.send_message("❌ This redzone is closed.", ephemeral=True)
+            return
+
         self.joined_users.add(interaction.user.id)
 
         uid_str = str(interaction.user.id)
@@ -118,6 +123,15 @@ class RedzoneView(View):
         active_redzone_messages.append(msg)
 
 async def handle_redzone_end(result, participants, redzone_number, guild, channel, interaction):
+    for view_message in active_redzone_messages:
+        try:
+            for component in view_message.components:
+                for child in component.children:
+                    child.disabled = True
+            await view_message.edit(view=view_message.components[0].view if view_message.components else None)
+        except:
+            pass
+
     if result == "win" and participants:
         split = WIN_AMOUNT // len(participants)
         log_entry = {"redzone": redzone_number, "result": "win", "split": split, "participants": []}
@@ -142,7 +156,7 @@ async def cleanup_redzone_messages(channel):
     await asyncio.sleep(2)
     messages = await channel.history(limit=100).flatten()
     for msg in messages:
-        if msg.id not in [leaderboard_message.id] and not any(btn.custom_id == "start_redzone_button" for btn in getattr(msg.components[0], "children", [])):
+        if msg.id != leaderboard_message.id and not any(btn.custom_id == "start_redzone_button" for btn in getattr(msg.components[0], "children", [])):
             try:
                 await msg.delete()
             except:

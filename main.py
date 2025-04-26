@@ -55,7 +55,7 @@ class PermanentRedzoneView(View):
             view = RedzoneView(postal_code=postal_code)
             embed = discord.Embed(
                 title=f"🚨 Redzone at Postal: {postal_code}",
-                description="You have 6 minutes.\n\n👥 Joined: _None yet_",
+                description="You have 4 minutes 30 seconds.\n\n👥 Joined: _None yet_",
                 color=discord.Color.red()
             )
             redzone_channel = interaction.guild.get_channel(CHANNEL_ID)
@@ -82,7 +82,7 @@ class RedzoneView(View):
         name_list = ", ".join(names) if names else "_None yet_"
         embed = discord.Embed(
             title=f"🚨 Redzone at Postal: {self.postal_code}",
-            description=f"You have 6 minutes.\n\n👥 Joined: {name_list}",
+            description=f"You have 4 minutes 30 seconds.\n\n👥 Joined: {name_list}",
             color=discord.Color.red()
         )
         await self.message.edit(embed=embed, view=self)
@@ -110,7 +110,7 @@ class RedzoneView(View):
         await interaction.followup.send(f"✅ You've joined Redzone at Postal: {self.postal_code}!", ephemeral=True)
 
     async def start_outcome_prompt(self, guild, channel):
-        await asyncio.sleep(360)
+        await asyncio.sleep(270)  # ⏰ 4 minutes 30 seconds
         participants = list(self.joined_users)
 
         class OutcomeView(View):
@@ -119,17 +119,18 @@ class RedzoneView(View):
 
             @discord.ui.button(label="Win", style=discord.ButtonStyle.success)
             async def win(self, interaction: discord.Interaction, button: Button):
+                await interaction.response.defer()  # ✅ prevent interaction failed
                 await handle_redzone_end(self.postal_code, "win", participants, guild, channel, interaction)
 
             @discord.ui.button(label="Lose", style=discord.ButtonStyle.danger)
             async def lose(self, interaction: discord.Interaction, button: Button):
+                await interaction.response.defer()  # ✅ prevent interaction failed
                 await handle_redzone_end(self.postal_code, "loss", participants, guild, channel, interaction)
 
         msg = await channel.send(f"⏳ Redzone at Postal {self.postal_code} is over. Was it a win or a loss?", view=OutcomeView())
         active_redzones[self.postal_code].append(msg)
 
 async def handle_redzone_end(postal_code, result, participants, guild, channel, interaction):
-    # Disable buttons
     for msg in active_redzones.get(postal_code, []):
         try:
             for comp in msg.components:
@@ -139,7 +140,6 @@ async def handle_redzone_end(postal_code, result, participants, guild, channel, 
         except:
             pass
 
-    # Delete all messages linked to this Redzone
     await asyncio.sleep(1)
     for msg in active_redzones.get(postal_code, []):
         try:

@@ -34,7 +34,6 @@ def save_json(filename, data):
 
 redzone_data = load_json(DATA_FILE, {})
 joined_users = set(redzone_data.keys())
-redzone_count = load_json(COUNT_FILE, {"count": 1})["count"]
 redzone_logs = load_json(LOG_FILE, [])
 leaderboard_message = None
 active_redzone_messages = []
@@ -45,24 +44,33 @@ class PermanentRedzoneView(View):
 
     @discord.ui.button(label="Start Redzone", style=discord.ButtonStyle.primary, custom_id="start_redzone_button")
     async def start_redzone(self, interaction: discord.Interaction, button: Button):
-        global redzone_count
-        view = RedzoneView(redzone_number=redzone_count)
-        embed = discord.Embed(
-            title=f"🚨 Join Redzone {redzone_count}!",
-            description="You have 6 minutes.\n\n👥 Joined: _None yet_",
-            color=discord.Color.red()
-        )
-        msg = await interaction.channel.send(embed=embed, view=view)
-        view.set_message(msg)
-        active_redzone_messages.append(msg)
-        await view.start_outcome_prompt(interaction.guild, interaction.channel)
-        redzone_count += 1
-        save_json(COUNT_FILE, {"count": redzone_count})
+        await interaction.response.send_message("📍 Please enter the postal code for this Redzone (reply below):", ephemeral=True)
+
+        def check(m):
+            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
+
+        try:
+            msg = await bot.wait_for("message", timeout=30.0, check=check)
+            postal_code = msg.content.strip()
+
+            view = RedzoneView(postal_code=postal_code)
+            embed = discord.Embed(
+                title=f"🚨 Redzone at Postal: {postal_code}",
+                description="You have 6 minutes.\n\n👥 Joined: _None yet_",
+                color=discord.Color.red()
+            )
+            redzone_channel = interaction.guild.get_channel(CHANNEL_ID)
+            posted_msg = await redzone_channel.send(embed=embed, view=view)
+            view.set_message(posted_msg)
+            active_redzone_messages.append(posted_msg)
+            await view.start_outcome_prompt(interaction.guild, redzone_channel)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("❌ Redzone creation cancelled (no postal provided).", ephemeral=True)
 
 class RedzoneView(View):
-    def __init__(self, redzone_number):
+    def __init__(self, postal_code):
         super().__init__(timeout=None)
-        self.redzone_number = redzone_number
+        self.postal_code = postal_code
         self.joined_users = set()
         self.message = None
         self.closed = False
@@ -74,7 +82,7 @@ class RedzoneView(View):
         names = [f"<@{uid}>" for uid in self.joined_users]
         name_list = ", ".join(names) if names else "_None yet_"
         embed = discord.Embed(
-            title=f"🚨 Join Redzone {self.redzone_number}!",
+            title=f"🚨 Redzone at Postal: {self.postal_code}",
             description=f"You have 6 minutes.\n\n👥 Joined: {name_list}",
             color=discord.Color.red()
         )
@@ -100,12 +108,11 @@ class RedzoneView(View):
         await interaction.response.defer(ephemeral=True)
         await self.update_joined_embed(interaction.guild)
         await update_leaderboard(interaction.guild)
-        await interaction.followup.send(f"✅ You've joined Redzone {self.redzone_number}!", ephemeral=True)
+        await interaction.followup.send(f"✅ You've joined Redzone at Postal: {self.postal_code}!", ephemeral=True)
 
     async def start_outcome_prompt(self, guild, channel):
         await asyncio.sleep(360)
         participants = list(self.joined_users)
-        rn = self.redzone_number
 
         class OutcomeView(View):
             def __init__(self):
@@ -113,16 +120,16 @@ class RedzoneView(View):
 
             @discord.ui.button(label="Win", style=discord.ButtonStyle.success)
             async def win(self, interaction: discord.Interaction, button: Button):
-                await handle_redzone_end("win", participants, rn, guild, channel, interaction)
+                await handle_redzone_end("win", participants, guild, channel, interaction)
 
             @discord.ui.button(label="Lose", style=discord.ButtonStyle.danger)
             async def lose(self, interaction: discord.Interaction, button: Button):
-                await handle_redzone_end("loss", participants, rn, guild, channel, interaction)
+                await handle_redzone_end("loss", participants, guild, channel, interaction)
 
-        msg = await channel.send(f"⏳ Redzone {rn} over. Was it a win or a loss?", view=OutcomeView())
+        msg = await channel.send(f"⏳ Redzone at Postal: {self.postal_code} over. Was it a win or a loss?", view=OutcomeView())
         active_redzone_messages.append(msg)
 
-async def handle_redzone_end(result, participants, redzone_number, guild, channel, interaction):
+async def handle_redzone_end(result, participants, guild, channel, interaction):
     for view_message in active_redzone_messages:
         try:
             for component in view_message.components:
@@ -134,21 +141,15 @@ async def handle_redzone_end(result, participants, redzone_number, guild, channe
 
     if result == "win" and participants:
         split = WIN_AMOUNT // len(participants)
-        log_entry = {"redzone": redzone_number, "result": "win", "split": split, "participants": []}
         for uid in participants:
             uid_str = str(uid)
             redzone_data[uid_str]["wins"] += 1
             redzone_data[uid_str]["earned"] += split
-            log_entry["participants"].append(uid_str)
-        redzone_logs.append(log_entry)
         save_json(DATA_FILE, redzone_data)
-        save_json(LOG_FILE, redzone_logs)
         await update_leaderboard(guild)
-        await interaction.response.edit_message(content=f"✅ Redzone {redzone_number} marked as a **WIN**! Each participant gets £{split:,}.", view=None)
+        await interaction.response.edit_message(content=f"✅ Redzone marked as a **WIN**! Each participant gets £{split:,}.", view=None)
     else:
-        redzone_logs.append({"redzone": redzone_number, "result": "loss", "participants": [str(uid) for uid in participants]})
-        save_json(LOG_FILE, redzone_logs)
-        await interaction.response.edit_message(content=f"❌ Redzone {redzone_number} marked as a **LOSS**. No payout.", view=None)
+        await interaction.response.edit_message(content=f"❌ Redzone marked as a **LOSS**. No payout.", view=None)
 
     await cleanup_redzone_messages(channel)
 

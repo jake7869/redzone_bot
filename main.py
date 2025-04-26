@@ -6,8 +6,8 @@ import os
 import json
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-CHANNEL_ID = 1359223780857217246  # Redzone activity channel
-LEADERBOARD_CHANNEL_ID = 1359223780857217246  # Change this to your leaderboard channel ID
+CHANNEL_ID = 1359223780857217246
+LEADERBOARD_CHANNEL_ID = 1359223780857217246
 ADMIN_ROLE_ID = 1300916696860856448
 WIN_AMOUNT = 250_000
 
@@ -37,6 +37,7 @@ joined_users = set(redzone_data.keys())
 redzone_count = load_json(COUNT_FILE, {"count": 1})["count"]
 redzone_logs = load_json(LOG_FILE, [])
 leaderboard_message = None
+active_redzone_messages = []
 
 class PermanentRedzoneView(View):
     def __init__(self):
@@ -53,6 +54,7 @@ class PermanentRedzoneView(View):
         )
         msg = await interaction.channel.send(embed=embed, view=view)
         view.set_message(msg)
+        active_redzone_messages.append(msg)
         await view.start_outcome_prompt(interaction.guild, interaction.channel)
         redzone_count += 1
         save_json(COUNT_FILE, {"count": redzone_count})
@@ -106,38 +108,46 @@ class RedzoneView(View):
 
             @discord.ui.button(label="Win", style=discord.ButtonStyle.success)
             async def win(self, interaction: discord.Interaction, button: Button):
-                if not participants:
-                    await interaction.response.send_message("❌ No participants to reward.", ephemeral=True)
-                    return
-                split = WIN_AMOUNT // len(participants)
-                log_entry = {
-                    "redzone": rn,
-                    "result": "win",
-                    "split": split,
-                    "participants": []
-                }
-                for uid in participants:
-                    uid_str = str(uid)
-                    redzone_data[uid_str]["wins"] += 1
-                    redzone_data[uid_str]["earned"] += split
-                    log_entry["participants"].append(uid_str)
-                redzone_logs.append(log_entry)
-                save_json(DATA_FILE, redzone_data)
-                save_json(LOG_FILE, redzone_logs)
-                await update_leaderboard(guild)
-                await interaction.response.edit_message(content=f"✅ Redzone {rn} marked as a **WIN**! Each participant gets £{split:,}.", view=None)
+                await handle_redzone_end("win", participants, rn, guild, channel, interaction)
 
             @discord.ui.button(label="Lose", style=discord.ButtonStyle.danger)
             async def lose(self, interaction: discord.Interaction, button: Button):
-                redzone_logs.append({
-                    "redzone": rn,
-                    "result": "loss",
-                    "participants": [str(uid) for uid in participants]
-                })
-                save_json(LOG_FILE, redzone_logs)
-                await interaction.response.edit_message(content=f"❌ Redzone {rn} marked as a **LOSS**. No payout.", view=None)
+                await handle_redzone_end("loss", participants, rn, guild, channel, interaction)
 
-        await channel.send(f"⏳ Redzone {rn} over. Was it a win or a loss?", view=OutcomeView())
+        msg = await channel.send(f"⏳ Redzone {rn} over. Was it a win or a loss?", view=OutcomeView())
+        active_redzone_messages.append(msg)
+
+async def handle_redzone_end(result, participants, redzone_number, guild, channel, interaction):
+    if result == "win" and participants:
+        split = WIN_AMOUNT // len(participants)
+        log_entry = {"redzone": redzone_number, "result": "win", "split": split, "participants": []}
+        for uid in participants:
+            uid_str = str(uid)
+            redzone_data[uid_str]["wins"] += 1
+            redzone_data[uid_str]["earned"] += split
+            log_entry["participants"].append(uid_str)
+        redzone_logs.append(log_entry)
+        save_json(DATA_FILE, redzone_data)
+        save_json(LOG_FILE, redzone_logs)
+        await update_leaderboard(guild)
+        await interaction.response.edit_message(content=f"✅ Redzone {redzone_number} marked as a **WIN**! Each participant gets £{split:,}.", view=None)
+    else:
+        redzone_logs.append({"redzone": redzone_number, "result": "loss", "participants": [str(uid) for uid in participants]})
+        save_json(LOG_FILE, redzone_logs)
+        await interaction.response.edit_message(content=f"❌ Redzone {redzone_number} marked as a **LOSS**. No payout.", view=None)
+
+    await cleanup_redzone_messages(channel)
+
+async def cleanup_redzone_messages(channel):
+    await asyncio.sleep(2)
+    messages = await channel.history(limit=100).flatten()
+    for msg in messages:
+        if msg.id not in [leaderboard_message.id] and not any(btn.custom_id == "start_redzone_button" for btn in getattr(msg.components[0], "children", [])):
+            try:
+                await msg.delete()
+            except:
+                pass
+    active_redzone_messages.clear()
 
 class ResetView(View):
     @discord.ui.button(label="Payout & Reset", style=discord.ButtonStyle.danger)
